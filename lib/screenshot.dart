@@ -156,6 +156,12 @@ class ScreenshotController {
         imageSize.aspectRatio
             .toStringAsPrecision(5)); // Adapted (toPrecision was not available)
 
+    // toImage sizes the bitmap with ceil(pixelRatio * logicalSize). A fractional
+    // product leaves the last row only partly covered, so its alpha is not 255.
+    final captureRatio = pixelRatio ??
+        (logicalSize.width == 0 ? 1.0 : imageSize.width / logicalSize.width);
+    child = _CapturePixelGrid(pixelRatio: captureRatio, child: child);
+
     final RenderView renderView = RenderView(
       view: view,
       child: RenderPositionedBox(
@@ -215,8 +221,7 @@ class ScreenshotController {
       ///
       isDirty = false;
 
-      image = await repaintBoundary.toImage(
-          pixelRatio: pixelRatio ?? (imageSize.width / logicalSize.width));
+      image = await repaintBoundary.toImage(pixelRatio: captureRatio);
 
       ///
       ///This delay sholud increas with Widget tree Size
@@ -397,4 +402,89 @@ class _MeasurementView extends RenderBox
 
   @override
   void debugAssertDoesMeetConstraints() => true;
+}
+
+/// Lifts a logical length onto a whole physical pixel for [pixelRatio].
+///
+/// Ceil past [max] is folded back down so the result still fits the parent.
+double snapLogicalToPixel(
+  double logical,
+  double pixelRatio, [
+  double max = double.infinity,
+]) {
+  if (!logical.isFinite) return logical;
+  final up = (logical * pixelRatio).ceil() / pixelRatio;
+  if (!max.isFinite || up <= max) return up;
+  final down = (max * pixelRatio).floor() / pixelRatio;
+  return down < 0 ? 0.0 : down;
+}
+
+class _CapturePixelGrid extends SingleChildRenderObjectWidget {
+  const _CapturePixelGrid({required this.pixelRatio, required Widget child})
+    : super(child: child);
+
+  final double pixelRatio;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderCapturePixelGrid(pixelRatio);
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderCapturePixelGrid renderObject,
+  ) {
+    renderObject.pixelRatio = pixelRatio;
+  }
+}
+
+class _RenderCapturePixelGrid extends RenderProxyBox {
+  _RenderCapturePixelGrid(this._pixelRatio);
+
+  double _pixelRatio;
+
+  double get pixelRatio => _pixelRatio;
+
+  set pixelRatio(double value) {
+    if (_pixelRatio == value) return;
+    _pixelRatio = value;
+    markNeedsLayout();
+  }
+
+  @override
+  void performLayout() {
+    final child = this.child!;
+    final maxWidth = snapLogicalToPixel(
+      constraints.maxWidth,
+      _pixelRatio,
+      constraints.maxWidth,
+    );
+    final maxHeight = snapLogicalToPixel(
+      constraints.maxHeight,
+      _pixelRatio,
+      constraints.maxHeight,
+    );
+    child.layout(
+      BoxConstraints(
+        minWidth: constraints.minWidth <= maxWidth
+            ? constraints.minWidth
+            : maxWidth,
+        maxWidth: maxWidth,
+        minHeight: constraints.minHeight <= maxHeight
+            ? constraints.minHeight
+            : maxHeight,
+        maxHeight: maxHeight,
+      ),
+      parentUsesSize: true,
+    );
+    final snapped = Size(
+      snapLogicalToPixel(child.size.width, _pixelRatio, maxWidth),
+      snapLogicalToPixel(child.size.height, _pixelRatio, maxHeight),
+    );
+    if (snapped != child.size) {
+      child.layout(BoxConstraints.tight(snapped), parentUsesSize: true);
+    }
+    size = snapped;
+  }
 }
